@@ -1,126 +1,171 @@
 #include <Arduino.h>
 #include <LiquidCrystal_I2C.h>
 #include <Wire.h>
+#include <SPI.h>
+#include <DS3231.h>
+#include <Thinary_AHT10.h>
+#include <OneWire.h>
+#include <DallasTemperature.h>
+#include <EEPROM.h> 
+
+#include <BMP085.h>
 
 #include "header.h"
 
-LiquidCrystal_I2C lcd(LCD_ADDR, LCD_COLS, LCD_ROWS);  // Устанавливаем дисплей
+float get_pressure();
+float get_outside_temp();
 
+LiquidCrystal_I2C lcd(LCD_ADDR, LCD_COLS, LCD_ROWS);
 
-char Time[]     = "TIME:  :  :  ";
-char Calendar[] = "DATE:  /  /20  ";
-ClockValue second(59, 11, 0), minute(59, 8, 0), hour(23, 5, 0), date(31, 5, 1), month(12, 8, 1), year(99, 13, 1);
+DS3231 real_time_clock;
+AHT10Class AHT10;
+
+OneWire oneWire(A1);// вход датчика 18b20
+DallasTemperature dallas_temperature(&oneWire);
+
+BMP085 dps = BMP085();
+
+unsigned long last_sensor_query_time;
+
+Clock clock_view(0, 0, true);
+Calendar calendar_view(1, 2);
+
+FloatValue humidity(1, 3, [] { return AHT10.GetHumidity(); }, "%");
+FloatValue pressure(7, 3, get_pressure);
+FloatValue temp_inside(13, 2, [] { return AHT10.GetTemperature(); }, "\337C");
+FloatValue temp_outside(13, 3, get_outside_temp, "\337C");
 
 void setup() {
-  pinMode(BUTTON1_PIN, INPUT_PULLUP);
-  pinMode(BUTTON2_PIN, INPUT_PULLUP);
-  pinMode(BUTTON3_PIN, INPUT_PULLUP);
+  pinMode(EDIT_NEXT_PARAM_BUTTON, INPUT_PULLUP);
+  pinMode(INC_PARAM_BUTTON, INPUT_PULLUP);
+  pinMode(DEC_PARAM_BUTTON, INPUT_PULLUP);
+
+  pinMode(BRIGHTNESS_OUTPUT_PIN, OUTPUT); // яркость
+
   lcd.init();
   lcd.backlight();// Включаем подсветку дисплея
+  create_big_font_characters(&lcd);
+
   Wire.begin(); // Join i2c bus
+
+  AHT10.begin();
+
+  real_time_clock.begin();
+  dps.init();
+  dallas_temperature.begin();
+  dallas_temperature.setResolution(10);
+
+  clock_view.display_template(&lcd);
+  calendar_view.display_template(&lcd);
+
+  update_date_time_view();
+  update_sensor_data_view();
 }
 
 void loop() {
-  if(button_pressed(BUTTON1_PIN)) {
+
+  set_auto_brightness();
+
+  // ОПРОС ДАТЧИКОВ КАЖДЫЕ 5 СЕК
+  if(millis() - last_sensor_query_time > SENSOR_QUERY_DELAY_MSEC) {
+    update_sensor_data_view();
+    last_sensor_query_time = millis();
+  }
+
+  if(button_pressed(EDIT_NEXT_PARAM_BUTTON)) {
       edit_parameters();
       save_clock_data();
       delay(200);
     }
 
-    read_clock_data();
-    display_date_time();
+    update_date_time_view();
+
     delay(50);
 }
 
-void display_date_time() {
+void update_sensor_data_view() {
+  humidity.update_value();
+  temp_inside.update_value();
+  pressure.update_value();
+  temp_outside.update_value();
 
-  hour.write_to_str(Time);
-  minute.write_to_str(Time);
-  second.write_to_str(Time);
+  humidity.print(&lcd);
+  pressure.print(&lcd);
+  temp_inside.print(&lcd);
+  temp_outside.print(&lcd);
+}
 
-  date.write_to_str(Calendar);
-  month.write_to_str(Calendar);
-  year.write_to_str(Calendar);
- 
-  lcd.setCursor(0,0);
-  lcd.print(Time);
-  lcd.setCursor(0,1);
-  lcd.print(Calendar);
+void update_date_time_view() {
+    RTCDateTime current_date_time = real_time_clock.getDateTime();  
+    calendar_view.update(&current_date_time);
+    clock_view.update(&current_date_time);
+
+    clock_view.display(&lcd);
+    calendar_view.display(&lcd);
+}
+ //автоматичекая яркость дисплея
+void set_auto_brightness() {
+    int brightness = (1024 - analogRead(0)) / 4;
+    analogWrite(BRIGHTNESS_OUTPUT_PIN, brightness);
 }
 
 void delay_with_break_by_button() {
   byte j = 0;
-  while(j < 10 && !button_pressed(BUTTON1_PIN) && !button_pressed(BUTTON2_PIN) && !button_pressed(BUTTON3_PIN)) {
+  while(j < 10 && !button_pressed(EDIT_NEXT_PARAM_BUTTON) && !button_pressed(INC_PARAM_BUTTON) && !button_pressed(DEC_PARAM_BUTTON)) {
     j++;
     delay(25);
   }
 }
 
-inline bool button_pressed(uint8_t button_pin) {
-  return !digitalRead(button_pin);
-}
-
 void edit_parameters() {
-  edit_parameter(&hour);
-  edit_parameter(&minute);
-  edit_parameter(&date);
-  edit_parameter(&month);
-  edit_parameter(&year);
+  edit_parameter(clock_view.getPart(ClockParts::Hour));
+  edit_parameter(clock_view.getPart(ClockParts::Minute));
+  edit_parameter(calendar_view.getPart(CalendarParts::Date));
+  edit_parameter(calendar_view.getPart(CalendarParts::Month));
+  edit_parameter(calendar_view.getPart(CalendarParts::Year));
 }
 
 void edit_parameter(ClockValue* parameter) {
-  char text_buffer[3];
 
-  while(button_pressed(BUTTON1_PIN));              // Wait until button 1 released
+  while(button_pressed(EDIT_NEXT_PARAM_BUTTON)); // Wait until edit button released
 
   while(true) {
 
-    while(button_pressed(BUTTON2_PIN)) {                      // If button 2 is pressed
+    while(button_pressed(INC_PARAM_BUTTON)) {
       parameter->inc();
-      parameter->print(&lcd, text_buffer);
-      delay(200);                                // Wait 200ms
+      parameter->print(&lcd);
+      delay(200);
     }
-    while(button_pressed(BUTTON3_PIN)) {
+    while(button_pressed(DEC_PARAM_BUTTON)) {
       parameter->dec();
-      parameter->print(&lcd, text_buffer);
-      delay(200);                                // Wait 200ms
+      parameter->print(&lcd);
+      delay(200);
     }
     parameter->print_blank(&lcd);
     delay_with_break_by_button();
-    parameter->print(&lcd, text_buffer);
+    parameter->print(&lcd);
     delay_with_break_by_button();
 
-    if(button_pressed(BUTTON1_PIN)) {
-      return;                          // Return parameter value and exit
+    if(button_pressed(EDIT_NEXT_PARAM_BUTTON)) {
+      return;
     }
   }
-
 }
  
 void save_clock_data() {
-  // Write data to DS1307 RTC
-  Wire.beginTransmission(CLOCK_ADDR);               // Start I2C protocol with DS1307 address
-  Wire.write(0);                              // Send register address
-  Wire.write(0);                              // Reset sesonds and start oscillator
-  minute.write_to_wire(&Wire);
-  hour.write_to_wire(&Wire);
-  Wire.write(1);                              // Write day (not used)
-  date.write_to_wire(&Wire);
-  month.write_to_wire(&Wire);
-  year.write_to_wire(&Wire);
-  Wire.endTransmission();                     // Stop transmission and release the I2C bus
+  RTCDateTime current;
+  calendar_view.fill(&current);
+  clock_view.fill(&current);
+  real_time_clock.setDateTime(current.year, current.month, current.day, current.hour, current.minute, 0);
 }
 
-void read_clock_data() {
-  Wire.beginTransmission(CLOCK_ADDR);                 // Start I2C protocol with DS1307 address
-  Wire.write(0);                                // Send register address
-  Wire.endTransmission(false);                  // I2C restart
-  Wire.requestFrom(CLOCK_ADDR, 7);                    // Request 7 bytes from DS1307 and release I2C bus at end of reading
-  second.read_from_wire(&Wire);                  // Read seconds from register 0
-  minute.read_from_wire(&Wire);                  // Read minuts from register 1
-  hour.read_from_wire(&Wire);                    // Read from register 2
-  Wire.read();                                  // Read day from register 3 (not used)
-  date.read_from_wire(&Wire);                         // Read from register 4
-  month.read_from_wire(&Wire);                         // Read from register 5
-  year.read_from_wire(&Wire);                         // Read from register 6
+float get_pressure() {
+  int32_t pascal_pressure = 0;
+  dps.getPressure(&pascal_pressure); 
+  return pascal_to_mmhg(pascal_pressure);
+}
+
+float get_outside_temp() { 
+  dallas_temperature.requestTemperatures();
+  return dallas_temperature.getTempCByIndex(0);
 }
