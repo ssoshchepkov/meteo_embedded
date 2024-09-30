@@ -30,10 +30,10 @@ unsigned long last_sensor_query_time;
 Clock clock_view(0, 0, true);
 Calendar calendar_view(1, 2);
 
-FloatValue humidity(1, 3, [] { return AHT10.GetHumidity(); }, "%");
-FloatValue pressure(7, 3, get_pressure);
-FloatValue temp_inside(13, 2, [] { return AHT10.GetTemperature(); }, "\337C");
-FloatValue temp_outside(13, 3, get_outside_temp, "\337C");
+FloatValue humidity(1, 3, 0.0, 99.9, [] { return AHT10.GetHumidity(); }, "%");
+FloatValue pressure(7, 3, 0.0, 999.9, get_pressure);
+FloatValue temp_inside(13, 2, -99.9, 99.9, [] { return AHT10.GetTemperature(); }, "\337C");
+FloatValue temp_outside(13, 3, -99.9, 99.9, get_outside_temp, "\337C");
 
 void setup() {
   pinMode(EDIT_NEXT_PARAM_BUTTON, INPUT_PULLUP);
